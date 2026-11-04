@@ -1,0 +1,4 @@
+﻿source_file,status,document_type,delivery_note_no,distribution_receipt_no,customer_so,etd,wms_refs,target_file,notes
+/Users/crystal/Downloads/3816_001.pdf,ALREADY_NAMED,Distribution Receipt,,1013324217,,,"0007525614, 0007525620",/Users/crystal/Documents/Codex/2026-11-04/ni-shi/outputs/chatibe_rename_demo/demo_renamed/1013324217.pdf,WMS matched 2/2
+/Users/crystal/Downloads/3817_001.pdf,ALREADY_NAMED,Delivery Note,000007525614,,SO#HK0001362587,10/30/2026,,/Users/crystal/Documents/Codex/2026-11-04/ni-shi/outputs/chatibe_rename_demo/demo_renamed/SO#HK0001362587.pdf,
+/Users/crystal/Downloads/3818_001.pdf,ALREADY_NAMED,Delivery Note,000007525620,,STOHK0000010476,10/30/2026,,/Users/crystal/Documents/Codex/2026-11-04/ni-shi/outputs/chatibe_rename_demo/demo_renamed/STOHK0000010476.pdf,

@@ -1,0 +1,53 @@
+{
+  "generated_at": "2026-11-04T06:17:32.792261+00:00",
+  "mode": "copy",
+  "documents": [
+    {
+      "source_file": "3816_001.pdf",
+      "document_type": "DISTRIBUTION_RECEIPT",
+      "status": "ALREADY_PRESENT",
+      "final_name": "1013324217.pdf",
+      "distribution_receipt_no": "1013324217",
+      "delivery_note_no": null,
+      "wms_refs": [
+        "0007525614",
+        "0007525620"
+      ],
+      "customer_so": null,
+      "etd": null,
+      "message": null
+    },
+    {
+      "source_file": "3817_001.pdf",
+      "document_type": "DELIVERY_NOTE",
+      "status": "COPIED",
+      "final_name": "SO#HK0001362587.pdf",
+      "distribution_receipt_no": null,
+      "delivery_note_no": "000007525614",
+      "wms_refs": null,
+      "customer_so": "SO#HK0001362587",
+      "etd": "2026-10-30",
+      "message": null
+    },
+    {
+      "source_file": "3818_001.pdf",
+      "document_type": "DELIVERY_NOTE",
+      "status": "COPIED",
+      "final_name": "STOHK0000010476.pdf",
+      "distribution_receipt_no": null,
+      "delivery_note_no": "000007525620",
+      "wms_refs": null,
+      "customer_so": "STOHK0000010476",
+      "etd": "2026-10-30",
+      "message": null
+    }
+  ],
+  "wms_links": {
+    "7525614": [
+      "SO#HK0001362587.pdf"
+    ],
+    "7525620": [
+      "STOHK0000010476.pdf"
+    ]
+  }
+}

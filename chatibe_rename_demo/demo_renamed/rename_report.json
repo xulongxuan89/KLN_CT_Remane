@@ -1,0 +1,41 @@
+[
+  {
+    "source_file": "/Users/crystal/Downloads/3816_001.pdf",
+    "status": "ALREADY_NAMED",
+    "document_type": "Distribution Receipt",
+    "delivery_note_no": "",
+    "distribution_receipt_no": "1013324217",
+    "customer_so": "",
+    "etd": "",
+    "wms_refs": [
+      "0007525614",
+      "0007525620"
+    ],
+    "target_file": "/Users/crystal/Documents/Codex/2026-11-04/ni-shi/outputs/chatibe_rename_demo/demo_renamed/1013324217.pdf",
+    "notes": "WMS matched 2/2"
+  },
+  {
+    "source_file": "/Users/crystal/Downloads/3817_001.pdf",
+    "status": "ALREADY_NAMED",
+    "document_type": "Delivery Note",
+    "delivery_note_no": "000007525614",
+    "distribution_receipt_no": "",
+    "customer_so": "SO#HK0001362587",
+    "etd": "10/30/2026",
+    "wms_refs": [],
+    "target_file": "/Users/crystal/Documents/Codex/2026-11-04/ni-shi/outputs/chatibe_rename_demo/demo_renamed/SO#HK0001362587.pdf",
+    "notes": ""
+  },
+  {
+    "source_file": "/Users/crystal/Downloads/3818_001.pdf",
+    "status": "ALREADY_NAMED",
+    "document_type": "Delivery Note",
+    "delivery_note_no": "000007525620",
+    "distribution_receipt_no": "",
+    "customer_so": "STOHK0000010476",
+    "etd": "10/30/2026",
+    "wms_refs": [],
+    "target_file": "/Users/crystal/Documents/Codex/2026-11-04/ni-shi/outputs/chatibe_rename_demo/demo_renamed/STOHK0000010476.pdf",
+    "notes": ""
+  }
+]
