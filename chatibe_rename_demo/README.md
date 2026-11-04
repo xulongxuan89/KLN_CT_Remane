@@ -6,8 +6,8 @@
   `1013324217-1-L` 改为 `1013324217.pdf`。
 - `Delivery Note`：读取 `Customer SO`。例如
   `SO#HK0001362587` 改为 `SO#HK0001362587.pdf`。
-- `Packing List`：读取 `OrderKey` 或 `SO Ref`，并用 `_PL` 后缀与 Delivery
-  Note 区分。例如 `SO#HK0001362531` 改为 `SO#HK0001362531_PL.pdf`。
+- `Packing List`：读取 `OrderKey` 或 `SO Ref`，命名规则与 Delivery Note
+  相同。例如 `SO#HK0001362531` 改为 `SO#HK0001362531.pdf`。
 
 同时会识别 Delivery Note 的 `ETD`、Delivery Note No.，以及 Distribution
 Receipt 的 `WMS Ref#`，把 WMS Ref# 与本次批次中的 Delivery Note No. 做关联校验。
@@ -143,9 +143,9 @@ STOHK0000010476.pdf    第 4-5 页
 Packing List 混合批次示例：
 
 ```text
-SO#HK0001362531_PL.pdf     第 1-9 页（含同 SO 的 Picking List）
-SO#HK0001362414_PL.pdf     第 10 页
-SO#HK0001362413_PL.pdf     第 11 页
+SO#HK0001362531.pdf        第 1-9 页（含同 SO 的 Picking List）
+SO#HK0001362414.pdf        第 10 页
+SO#HK0001362413.pdf        第 11 页
 ```
 
 ## 样张预期结果

@@ -379,7 +379,7 @@ def extract_packing_list(tokens: list[OcrToken]) -> dict[str, str]:
 
     return {
         "customer_so": customer_so,
-        "target_stem": f"{customer_so}_PL",
+        "target_stem": customer_so,
     }
 
 
