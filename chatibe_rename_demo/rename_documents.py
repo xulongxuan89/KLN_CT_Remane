@@ -71,6 +71,7 @@ class DocumentInfo:
 class PageGroup:
     document_type: str
     page_indices: list[int]
+    business_key: str = ""
 
     @property
     def page_label(self) -> str:
@@ -144,6 +145,8 @@ def classify(tokens: Iterable[OcrToken]) -> str:
     text = " ".join(compact(token.text) for token in tokens)
     if "DISTRIBUTIONRECEIPT" in text:
         return "Distribution Receipt"
+    if "PACKINGLIST" in text:
+        return "Packing List"
     if "DELIVERYNOTE" in text:
         return "Delivery Note"
     raise ValueError("unsupported document layout")
@@ -161,18 +164,32 @@ def page_footer(tokens: Iterable[OcrToken]) -> tuple[int, int] | None:
     return None
 
 
+def page_business_key(tokens: Iterable[OcrToken]) -> str:
+    text = " ".join(token.text for token in tokens)
+    match = re.search(r"\b(?:SO#|S0#)[A-Z0-9#-]{6,}\b", text, re.IGNORECASE)
+    if not match:
+        return ""
+    return match.group(0).upper().replace("S0#", "SO#")
+
+
 def page_start_type(tokens: list[OcrToken]) -> str | None:
     footer = page_footer(tokens)
     if footer and footer[0] > 1:
         return None
 
     compact_page = "".join(compact(token.text) for token in tokens)
+    business_key = page_business_key(tokens)
 
     if "DISTRIBUTIONRECEIPT" in compact_page:
         return "Distribution Receipt"
+    if "PACKINGLIST" in compact_page:
+        if business_key:
+            return "Packing List"
     if re.search(r"DELIVERYNOTE[0-9]{7,}", compact_page):
         if "CUSTOMERSO" in compact_page and "ETD" in compact_page:
             return "Delivery Note"
+    if footer and footer[0] == 1 and business_key:
+        return "Packing List"
     if footer and footer[0] == 1:
         try:
             return classify(tokens)
@@ -195,24 +212,43 @@ def detect_page_groups(
     current_type: str | None = None
     current_pages: list[int] = []
     declared_total: int | None = None
+    current_key = ""
 
     for page_index in range(page_count):
         tokens = ocr_page(pdf_path, page_index, ocr, dpi)
         start_type = page_start_type(tokens)
 
         if start_type:
+            business_key = page_business_key(tokens)
+            footer = page_footer(tokens)
+
+            # A one-page picking list or attachment can follow a multi-page
+            # Packing List and carry Page 1/1 again. Keep it in the same
+            # business document when the SO number matches.
+            if (
+                current_type == "Packing List"
+                and start_type == "Packing List"
+                and current_key
+                and business_key
+                and business_key == current_key
+            ):
+                current_pages.append(page_index)
+                continue
+
             if current_type and current_pages:
-                if declared_total is not None and len(current_pages) != declared_total:
+                if declared_total is not None and len(current_pages) < declared_total:
                     raise ValueError(
                         f"{current_type} on pages {current_pages[0] + 1}-"
                         f"{current_pages[-1] + 1} is incomplete: "
                         f"expected {declared_total} page(s), found {len(current_pages)}"
                     )
-                groups.append(PageGroup(current_type, current_pages))
+                groups.append(
+                    PageGroup(current_type, current_pages, current_key)
+                )
             current_type = start_type
             current_pages = [page_index]
-            footer = page_footer(tokens)
             declared_total = footer[1] if footer and footer[0] == 1 else None
+            current_key = business_key
         else:
             if current_type is None:
                 raise ValueError(
@@ -221,13 +257,13 @@ def detect_page_groups(
             current_pages.append(page_index)
 
     if current_type and current_pages:
-        if declared_total is not None and len(current_pages) != declared_total:
+        if declared_total is not None and len(current_pages) < declared_total:
             raise ValueError(
                 f"{current_type} on pages {current_pages[0] + 1}-"
                 f"{current_pages[-1] + 1} is incomplete: "
                 f"expected {declared_total} page(s), found {len(current_pages)}"
             )
-        groups.append(PageGroup(current_type, current_pages))
+        groups.append(PageGroup(current_type, current_pages, current_key))
 
     if not groups:
         raise ValueError("No supported documents were found")
@@ -333,6 +369,17 @@ def extract_distribution_receipt(tokens: list[OcrToken]) -> dict[str, object]:
         "distribution_receipt_no": receipt_no,
         "wms_refs": wms_refs,
         "target_stem": receipt_no,
+    }
+
+
+def extract_packing_list(tokens: list[OcrToken]) -> dict[str, str]:
+    customer_so = page_business_key(tokens)
+    if not customer_so:
+        raise ValueError("Packing List SO/OrderKey was not found")
+
+    return {
+        "customer_so": customer_so,
+        "target_stem": f"{customer_so}_PL",
     }
 
 
@@ -480,6 +527,9 @@ def process_document(
             record.delivery_note_no = str(fields["delivery_note_no"])
             record.customer_so = str(fields["customer_so"])
             record.etd = str(fields["etd"])
+        elif record.document_type == "Packing List":
+            fields = extract_packing_list(tokens)
+            record.customer_so = str(fields["customer_so"])
         else:
             fields = extract_distribution_receipt(tokens)
             record.distribution_receipt_no = str(fields["distribution_receipt_no"])
