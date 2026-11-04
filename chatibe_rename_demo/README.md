@@ -10,6 +10,10 @@
 同时会识别 Delivery Note 的 `ETD`、Delivery Note No.，以及 Distribution
 Receipt 的 `WMS Ref#`，把 WMS Ref# 与本次批次中的 Delivery Note No. 做关联校验。
 
+一个 PDF 可以由多份单据连续扫描组成。程序会逐页检测单据起始页，按照
+`Page x/y` 页脚把续页归入上一份单据，再拆成独立 PDF 并分别改名。拆分只重排
+PDF 页面对象，不会重新压缩或降低扫描页面清晰度。
+
 ## 给同事使用的免安装版本
 
 `rename_gui.py` 是给普通用户使用的图形界面。Windows 管理员只需要在一台制作
@@ -33,9 +37,10 @@ Python**，也不需要安装 OCR、Office 或其他组件。
 使用方式：
 
 1. 双击程序。
-2. 选择一份或多份 PDF，或选择一个文件夹。
+2. 选择一份或多份 PDF，或选择一个文件夹。可以选择一份包含多张单据的合并
+   扫描 PDF。
 3. 选择改名后的保存位置。
-4. 点击“开始识别并改名”。
+4. 点击“开始拆分、识别并改名”。
 5. 在结果表中检查单据类型、识别字段和新文件名。
 
 程序默认复制原文件。已有同名但内容不同的文件不会被覆盖。输出目录还会生成
@@ -116,6 +121,20 @@ python rename_documents.py "/path/to/downloaded/attachments" -o "./renamed" --mo
 - `rename_report.csv`：便于用 Excel 查看；
 - `rename_report.json`：便于后续自动化程序读取。
 
+合并扫描示例：
+
+```bash
+python rename_documents.py combined_scan.pdf -o ./renamed
+```
+
+结果会按照扫描顺序生成，例如：
+
+```text
+1013324217.pdf         第 1 页
+SO#HK0001362587.pdf    第 2-3 页
+STOHK0000010476.pdf    第 4-5 页
+```
+
 ## 样张预期结果
 
 | 原文件 | 类型 | 输出文件 |
@@ -124,10 +143,14 @@ python rename_documents.py "/path/to/downloaded/attachments" -o "./renamed" --mo
 | `3817_001.pdf` | Delivery Note | `SO#HK0001362587.pdf` |
 | `3818_001.pdf` | Delivery Note | `STOHK0000010476.pdf` |
 
+将上述三份 PDF 按顺序合并成一个 5 页 PDF 后，程序仍会输出以上三个文件。
+
 ## 当前 Demo 的安全规则
 
 - 先分类，再读取对应版式的字段。
 - Delivery Note 的 ETD 或 Customer SO 缺失时不会猜文件名。
+- 新单据必须从包含标题的起始页开始；续页不能与新单据的页面交替扫描。
+- 如果页脚声明 `Page 1/2`，但批次中缺少第 2 页，程序会拒绝输出残缺文件。
 - 输出目录已有同名但内容不同的文件时，不覆盖，状态记为 `ERROR`。
 - 同一个输出名称在一个批次中出现两次时，相关文件需要人工检查。
 - 默认使用复制模式，建议确认历史样本识别准确后再使用 `--move`。

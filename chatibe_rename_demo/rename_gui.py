@@ -16,7 +16,7 @@ from rename_documents import (
     RapidOCR,
     annotate_wms_links,
     collect_inputs,
-    process_document,
+    process_pdf_batch,
     write_reports,
 )
 
@@ -24,7 +24,7 @@ from rename_documents import (
 class RenameApp:
     def __init__(self, root: Tk) -> None:
         self.root = root
-        self.root.title("CHATIBE 单据自动改名")
+        self.root.title("CHATIBE 单据自动拆分与改名")
         self.root.geometry("980x610")
         self.root.minsize(800, 500)
 
@@ -45,7 +45,7 @@ class RenameApp:
 
         title = ttk.Label(
             container,
-            text="KLN Distribution Receipt / Delivery Note 自动改名",
+            text="KLN Distribution Receipt / Delivery Note 自动拆分与改名",
             font=("", 16, "bold"),
         )
         title.grid(row=0, column=0, sticky="w", pady=(0, 12))
@@ -83,7 +83,7 @@ class RenameApp:
         action_frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
         self.start_button = ttk.Button(
             action_frame,
-            text="开始识别并改名",
+            text="开始拆分、识别并改名",
             command=self._start,
         )
         self.start_button.pack(side="left")
@@ -205,7 +205,7 @@ class RenameApp:
                 self.ui_queue.put(
                     ("status", f"正在处理 {index}/{len(inputs)}：{source.name}")
                 )
-                record = process_document(
+                source_records = process_pdf_batch(
                     source=source,
                     output_dir=output_dir,
                     ocr=ocr,
@@ -213,8 +213,9 @@ class RenameApp:
                     move=False,
                     planned_targets=planned_targets,
                 )
-                records.append(record)
-                self.ui_queue.put(("row", record))
+                records.extend(source_records)
+                for record in source_records:
+                    self.ui_queue.put(("row", record))
 
             annotate_wms_links(records)
             write_reports(output_dir, records)
@@ -255,11 +256,14 @@ class RenameApp:
             or record.customer_so
             or ", ".join(record.wms_refs)
         )
+        source_label = Path(record.source_file).name
+        if record.source_pages:
+            source_label = f"{source_label} p.{record.source_pages}"
         self.tree.insert(
             "",
             "end",
             values=(
-                Path(record.source_file).name,
+                source_label,
                 record.document_type,
                 identifier,
                 Path(record.target_file).name if record.target_file else "",

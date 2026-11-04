@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -63,6 +64,19 @@ class DocumentInfo:
     wms_refs: list[str] = field(default_factory=list)
     target_file: str = ""
     notes: str = ""
+    source_pages: str = ""
+
+
+@dataclass
+class PageGroup:
+    document_type: str
+    page_indices: list[int]
+
+    @property
+    def page_label(self) -> str:
+        if len(self.page_indices) == 1:
+            return str(self.page_indices[0] + 1)
+        return f"{self.page_indices[0] + 1}-{self.page_indices[-1] + 1}"
 
 
 def compact(value: str) -> str:
@@ -82,11 +96,16 @@ def safe_filename(value: str) -> str:
     return value
 
 
-def ocr_first_page(pdf_path: Path, ocr: RapidOCR, dpi: int) -> list[OcrToken]:
+def ocr_page(
+    pdf_path: Path,
+    page_index: int,
+    ocr: RapidOCR,
+    dpi: int,
+) -> list[OcrToken]:
     with pymupdf.open(pdf_path) as document:
-        if document.page_count < 1:
-            raise ValueError("PDF has no pages")
-        pixmap = document[0].get_pixmap(
+        if page_index < 0 or page_index >= document.page_count:
+            raise ValueError(f"PDF page {page_index + 1} does not exist")
+        pixmap = document[page_index].get_pixmap(
             dpi=dpi,
             colorspace=pymupdf.csRGB,
             alpha=False,
@@ -114,6 +133,13 @@ def ocr_first_page(pdf_path: Path, ocr: RapidOCR, dpi: int) -> list[OcrToken]:
     return tokens
 
 
+def ocr_first_page(pdf_path: Path, ocr: RapidOCR, dpi: int) -> list[OcrToken]:
+    with pymupdf.open(pdf_path) as document:
+        if document.page_count < 1:
+            raise ValueError("PDF has no pages")
+    return ocr_page(pdf_path, 0, ocr, dpi)
+
+
 def classify(tokens: Iterable[OcrToken]) -> str:
     text = " ".join(compact(token.text) for token in tokens)
     if "DISTRIBUTIONRECEIPT" in text:
@@ -121,6 +147,91 @@ def classify(tokens: Iterable[OcrToken]) -> str:
     if "DELIVERYNOTE" in text:
         return "Delivery Note"
     raise ValueError("unsupported document layout")
+
+
+def page_footer(tokens: Iterable[OcrToken]) -> tuple[int, int] | None:
+    for token in tokens:
+        match = re.search(
+            r"\bPage\s*(\d+)\s*(?:/|of)\s*(\d+)",
+            token.text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    return None
+
+
+def page_start_type(tokens: list[OcrToken]) -> str | None:
+    footer = page_footer(tokens)
+    if footer and footer[0] > 1:
+        return None
+
+    compact_page = "".join(compact(token.text) for token in tokens)
+
+    if "DISTRIBUTIONRECEIPT" in compact_page:
+        return "Distribution Receipt"
+    if re.search(r"DELIVERYNOTE[0-9]{7,}", compact_page):
+        if "CUSTOMERSO" in compact_page and "ETD" in compact_page:
+            return "Delivery Note"
+    if footer and footer[0] == 1:
+        try:
+            return classify(tokens)
+        except ValueError:
+            return None
+    return None
+
+
+def detect_page_groups(
+    pdf_path: Path,
+    ocr: RapidOCR,
+    dpi: int,
+) -> list[PageGroup]:
+    with pymupdf.open(pdf_path) as document:
+        page_count = document.page_count
+    if page_count < 1:
+        raise ValueError("PDF has no pages")
+
+    groups: list[PageGroup] = []
+    current_type: str | None = None
+    current_pages: list[int] = []
+    declared_total: int | None = None
+
+    for page_index in range(page_count):
+        tokens = ocr_page(pdf_path, page_index, ocr, dpi)
+        start_type = page_start_type(tokens)
+
+        if start_type:
+            if current_type and current_pages:
+                if declared_total is not None and len(current_pages) != declared_total:
+                    raise ValueError(
+                        f"{current_type} on pages {current_pages[0] + 1}-"
+                        f"{current_pages[-1] + 1} is incomplete: "
+                        f"expected {declared_total} page(s), found {len(current_pages)}"
+                    )
+                groups.append(PageGroup(current_type, current_pages))
+            current_type = start_type
+            current_pages = [page_index]
+            footer = page_footer(tokens)
+            declared_total = footer[1] if footer and footer[0] == 1 else None
+        else:
+            if current_type is None:
+                raise ValueError(
+                    f"Page {page_index + 1} is not a recognized document start page"
+                )
+            current_pages.append(page_index)
+
+    if current_type and current_pages:
+        if declared_total is not None and len(current_pages) != declared_total:
+            raise ValueError(
+                f"{current_type} on pages {current_pages[0] + 1}-"
+                f"{current_pages[-1] + 1} is incomplete: "
+                f"expected {declared_total} page(s), found {len(current_pages)}"
+            )
+        groups.append(PageGroup(current_type, current_pages))
+
+    if not groups:
+        raise ValueError("No supported documents were found")
+    return groups
 
 
 def nearest_value_to_right(
@@ -280,6 +391,7 @@ def write_reports(output_dir: Path, records: list[DocumentInfo]) -> None:
                 "wms_refs",
                 "target_file",
                 "notes",
+                "source_pages",
             ],
         )
         writer.writeheader()
@@ -351,8 +463,14 @@ def process_document(
     dpi: int,
     move: bool,
     planned_targets: dict[Path, Path],
+    reported_source: Path | None = None,
+    source_pages: str = "",
 ) -> DocumentInfo:
-    record = DocumentInfo(source_file=str(source), status="ERROR")
+    record = DocumentInfo(
+        source_file=str(reported_source or source),
+        status="ERROR",
+        source_pages=source_pages,
+    )
     try:
         tokens = ocr_first_page(source, ocr, dpi)
         record.document_type = classify(tokens)
@@ -396,6 +514,106 @@ def process_document(
     return record
 
 
+def split_page_group(
+    source: Path,
+    group: PageGroup,
+    destination: Path,
+) -> None:
+    with pymupdf.open(source) as original:
+        output = pymupdf.open()
+        try:
+            output.insert_pdf(
+                original,
+                from_page=group.page_indices[0],
+                to_page=group.page_indices[-1],
+            )
+            output.save(
+                destination,
+                garbage=3,
+                deflate=True,
+            )
+        finally:
+            output.close()
+
+
+def process_pdf_batch(
+    source: Path,
+    output_dir: Path,
+    ocr: RapidOCR,
+    dpi: int,
+    move: bool,
+    planned_targets: dict[Path, Path],
+) -> list[DocumentInfo]:
+    """Split one scanned PDF into logical documents and rename each one."""
+    try:
+        groups = detect_page_groups(source, ocr, dpi)
+    except Exception as exc:
+        return [
+            DocumentInfo(
+                source_file=str(source),
+                status="ERROR",
+                notes=str(exc),
+            )
+        ]
+
+    with pymupdf.open(source) as document:
+        page_count = document.page_count
+
+    is_whole_file = (
+        len(groups) == 1
+        and groups[0].page_indices == list(range(page_count))
+    )
+    if is_whole_file:
+        return [
+            process_document(
+                source=source,
+                output_dir=output_dir,
+                ocr=ocr,
+                dpi=dpi,
+                move=move,
+                planned_targets=planned_targets,
+                source_pages=groups[0].page_label,
+            )
+        ]
+
+    if move:
+        return [
+            DocumentInfo(
+                source_file=str(source),
+                status="ERROR",
+                notes="A PDF containing multiple documents cannot be moved; "
+                "use copy mode and remove the source manually after validation",
+            )
+        ]
+
+    records: list[DocumentInfo] = []
+    with tempfile.TemporaryDirectory(prefix="chatibe_split_") as temp_dir:
+        temp_root = Path(temp_dir)
+        for index, group in enumerate(groups, start=1):
+            split_path = temp_root / f"{source.stem}_document_{index}.pdf"
+            try:
+                split_page_group(source, group, split_path)
+                record = process_document(
+                    source=split_path,
+                    output_dir=output_dir,
+                    ocr=ocr,
+                    dpi=dpi,
+                    move=False,
+                    planned_targets=planned_targets,
+                    reported_source=source,
+                    source_pages=group.page_label,
+                )
+            except Exception as exc:
+                record = DocumentInfo(
+                    source_file=str(source),
+                    status="ERROR",
+                    source_pages=group.page_label,
+                    notes=f"split failed: {exc}",
+                )
+            records.append(record)
+    return records
+
+
 def main() -> int:
     args = build_parser().parse_args()
     output_dir = Path(args.output).expanduser().resolve()
@@ -423,7 +641,7 @@ def main() -> int:
     planned_targets: dict[Path, Path] = {}
 
     for source in inputs:
-        record = process_document(
+        source_records = process_pdf_batch(
             source=source,
             output_dir=output_dir,
             ocr=ocr,
@@ -431,12 +649,18 @@ def main() -> int:
             move=args.move,
             planned_targets=planned_targets,
         )
-        records.append(record)
-        print(
-            f"[{record.status:14}] {source.name} -> "
-            f"{Path(record.target_file).name if record.target_file else '-'}"
-            + (f" ({record.notes})" if record.notes and record.status == "ERROR" else "")
-        )
+        records.extend(source_records)
+        for record in source_records:
+            page_suffix = f" p.{record.source_pages}" if record.source_pages else ""
+            print(
+                f"[{record.status:14}] {source.name}{page_suffix} -> "
+                f"{Path(record.target_file).name if record.target_file else '-'}"
+                + (
+                    f" ({record.notes})"
+                    if record.notes and record.status == "ERROR"
+                    else ""
+                )
+            )
 
     annotate_wms_links(records)
     write_reports(output_dir, records)
