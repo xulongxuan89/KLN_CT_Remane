@@ -2,30 +2,53 @@ name: Build Windows portable app
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Locate application source
+        shell: pwsh
+        run: |
+          $candidates = @(".", "chatibe_rename_demo", "chattibe_rename_demo")
+          $projectDir = $candidates |
+            Where-Object { Test-Path (Join-Path $_ "requirements.txt") } |
+            Select-Object -First 1
+
+          if (-not $projectDir) {
+            throw "Cannot find requirements.txt in the repository root or project folder."
+          }
+
+          "PROJECT_DIR=$projectDir" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using project directory: $projectDir"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.10'
+          python-version: "3.12"
+          architecture: "x64"
 
-      - name: Install dependencies
+      - name: Install build dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller -r requirements.txt
+          python -m pip install -r requirements.txt -r requirements-build.txt
 
-      - name: Build with PyInstaller
-        run: |
-          pyinstaller --noconfirm --onedir --console main.py
+      - name: Build portable application
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: pyinstaller --noconfirm --clean rename_app.spec
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload portable application
+        uses: actions/upload-artifact@v6
         with:
           name: CHATIBE_Rename_Tool_Windows_x64
-          path: dist/main/
+          path: ${{ env.PROJECT_DIR }}/dist/CHATIBE_Rename_Tool/
+          if-no-files-found: error
+          retention-days: 14
