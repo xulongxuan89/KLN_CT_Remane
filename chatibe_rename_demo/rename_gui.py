@@ -15,8 +15,12 @@ from rename_documents import (
     DocumentInfo,
     RapidOCR,
     annotate_wms_links,
+    assign_regions,
     collect_inputs,
+    create_task_directory,
+    move_to_region_folders,
     process_pdf_batch,
+    resolve_ct_rename_root,
     write_reports,
 )
 
@@ -33,8 +37,10 @@ class RenameApp:
         self.count_var = StringVar(value="尚未选择文件")
         self.ui_queue: queue.Queue[tuple] = queue.Queue()
         self.worker: threading.Thread | None = None
+        self.last_task_dir: Path | None = None
 
         self._build_ui()
+        self.output_var.set(str(Path.home() / "Documents" / "CT Rename"))
         self.root.after(100, self._drain_ui_queue)
 
     def _build_ui(self) -> None:
@@ -67,7 +73,11 @@ class RenameApp:
             command=self._choose_folder,
         ).grid(row=0, column=2, padx=(8, 0))
 
-        output_frame = ttk.LabelFrame(container, text="2. 选择改名文件保存位置", padding=10)
+        output_frame = ttk.LabelFrame(
+            container,
+            text="2. CT Rename 总文件夹（任务时间文件夹自动创建）",
+            padding=10,
+        )
         output_frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         output_frame.columnconfigure(0, weight=1)
         ttk.Entry(output_frame, textvariable=self.output_var).grid(
@@ -103,7 +113,7 @@ class RenameApp:
         result_frame.columnconfigure(0, weight=1)
         result_frame.rowconfigure(0, weight=1)
 
-        columns = ("source", "type", "identifier", "target", "status")
+        columns = ("source", "type", "region", "identifier", "target", "status")
         self.tree = ttk.Treeview(
             result_frame,
             columns=columns,
@@ -112,11 +122,13 @@ class RenameApp:
         )
         self.tree.heading("source", text="原文件")
         self.tree.heading("type", text="类型")
+        self.tree.heading("region", text="区域")
         self.tree.heading("identifier", text="识别字段")
         self.tree.heading("target", text="新文件名")
         self.tree.heading("status", text="状态")
         self.tree.column("source", width=150)
         self.tree.column("type", width=145)
+        self.tree.column("region", width=75)
         self.tree.column("identifier", width=245)
         self.tree.column("target", width=240)
         self.tree.column("status", width=90)
@@ -143,7 +155,6 @@ class RenameApp:
         if not selected:
             return
         self.inputs = [Path(value) for value in selected]
-        self._set_default_output(self.inputs[0].parent / "renamed")
         self.count_var.set(f"已选择 {len(self.inputs)} 个 PDF 文件")
 
     def _choose_folder(self) -> None:
@@ -158,15 +169,10 @@ class RenameApp:
         if not self.inputs:
             messagebox.showwarning("没有 PDF", "所选文件夹中没有 PDF 文件。")
             return
-        self._set_default_output(Path(selected) / "renamed")
         self.count_var.set(f"已选择 {len(self.inputs)} 个 PDF 文件")
 
-    def _set_default_output(self, path: Path) -> None:
-        if not self.output_var.get().strip():
-            self.output_var.set(str(path))
-
     def _choose_output(self) -> None:
-        selected = filedialog.askdirectory(title="选择输出文件夹")
+        selected = filedialog.askdirectory(title="选择 CT Rename 总文件夹")
         if selected:
             self.output_var.set(selected)
 
@@ -196,7 +202,9 @@ class RenameApp:
 
     def _run_batch(self, inputs: list[Path], output_dir: Path) -> None:
         try:
-            output_dir.mkdir(parents=True, exist_ok=True)
+            rename_root = resolve_ct_rename_root(output_dir)
+            task_dir = create_task_directory(rename_root)
+            self.last_task_dir = task_dir
             ocr = RapidOCR()
             records: list[DocumentInfo] = []
             planned_targets: dict[Path, Path] = {}
@@ -207,7 +215,7 @@ class RenameApp:
                 )
                 source_records = process_pdf_batch(
                     source=source,
-                    output_dir=output_dir,
+                    output_dir=task_dir,
                     ocr=ocr,
                     dpi=250,
                     move=False,
@@ -218,13 +226,15 @@ class RenameApp:
                     self.ui_queue.put(("row", record))
 
             annotate_wms_links(records)
-            write_reports(output_dir, records)
+            assign_regions(records)
+            move_to_region_folders(task_dir, records)
+            write_reports(task_dir, records)
             failures = sum(record.status == "ERROR" for record in records)
             self.ui_queue.put(
                 (
                     "done",
                     f"完成：{len(records) - failures} 个成功，{failures} 个失败。"
-                    f"报告已保存到 {output_dir}",
+                    f"任务文件夹：{task_dir}",
                 )
             )
         except Exception as exc:
@@ -265,6 +275,7 @@ class RenameApp:
             values=(
                 source_label,
                 record.document_type,
+                record.region,
                 identifier,
                 Path(record.target_file).name if record.target_file else "",
                 record.status,
@@ -272,16 +283,16 @@ class RenameApp:
         )
 
     def _open_output(self) -> None:
-        output_text = self.output_var.get().strip()
-        if not output_text or not Path(output_text).exists():
-            messagebox.showwarning("文件夹不存在", "请先选择输出文件夹并完成处理。")
+        task_dir = self.last_task_dir
+        if task_dir is None or not task_dir.exists():
+            messagebox.showwarning("文件夹不存在", "请先完成一次处理。")
             return
         if sys.platform == "win32":
-            subprocess.Popen(["explorer", output_text])
+            subprocess.Popen(["explorer", str(task_dir)])
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", output_text])
+            subprocess.Popen(["open", str(task_dir)])
         else:
-            subprocess.Popen(["xdg-open", output_text])
+            subprocess.Popen(["xdg-open", str(task_dir)])
 
 
 def main() -> None:

@@ -44,12 +44,30 @@ Python**，也不需要安装 OCR、Office 或其他组件。
 1. 双击程序。
 2. 选择一份或多份 PDF，或选择一个文件夹。可以选择一份包含多张单据的合并
    扫描 PDF。
-3. 选择改名后的保存位置。
+3. 选择或确认 `CT Rename` 总文件夹位置。
 4. 点击“开始拆分、识别并改名”。
 5. 在结果表中检查单据类型、识别字段和新文件名。
 
-程序默认复制原文件。已有同名但内容不同的文件不会被覆盖。输出目录还会生成
-`rename_report.csv` 和 `rename_report.json`。
+程序默认复制原文件。已有同名但内容不同的文件不会被覆盖。每次任务会自动
+创建时间文件夹，并将结果放入 `Local` 或 `Oversea`：
+
+```text
+CT Rename\
+└── 2026-11-05_14-30-00\
+    ├── Local\
+    │   ├── 1013324217.pdf
+    │   └── SO#HK0001362587.pdf
+    ├── Oversea\
+    │   ├── SO#HK0001362444.pdf
+    │   └── SO#HK0001362445.pdf
+    ├── rename_report.csv
+    └── rename_report.json
+```
+
+区域判定使用同一任务内的业务关联：Distribution Receipt 本身为 `Local`；
+与 DR 的 WMS Ref# 匹配的 Delivery Note 为 `Local`；与 Local Delivery Note
+具有相同 SO 的 Packing List 为 `Local`；没有本地 DR/DN 关联的单据放入
+`Oversea`。
 
 正式分发给同事前，建议由 IT 对生成目录中的 EXE 做公司代码签名，否则
 Windows SmartScreen 可能显示“未知发布者”。
@@ -102,27 +120,28 @@ python rename_gui.py
 
 ## 命令行运行
 
-默认复制并改名，不改动原始扫描件：
+默认复制并拆分改名，不改动原始扫描件：
 
 ```bash
-python rename_documents.py 3816_001.pdf 3817_001.pdf 3818_001.pdf -o ./renamed
+python rename_documents.py 3816_001.pdf 3817_001.pdf 3818_001.pdf -o ~/Documents/CT Rename
 ```
 
 也可以传入一个目录：
 
 ```bash
-python rename_documents.py "/path/to/downloaded/attachments" -o "./renamed"
+python rename_documents.py "/path/to/downloaded/attachments" -o ~/Documents/CT Rename
 ```
 
 确认结果无误后，如果希望直接移动并改名，可以添加 `--move`：
 
 ```bash
-python rename_documents.py "/path/to/downloaded/attachments" -o "./renamed" --move
+python rename_documents.py "/path/to/downloaded/attachments" -o ~/Documents/CT Rename --move
 ```
 
-输出目录会生成：
+每次任务的时间目录会生成：
 
-- 已改名的 PDF 文件；
+- `Local`：本地单据；
+- `Oversea`：海外单据；
 - `rename_report.csv`：便于用 Excel 查看；
 - `rename_report.json`：便于后续自动化程序读取。
 

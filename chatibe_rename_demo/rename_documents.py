@@ -18,7 +18,7 @@ import shutil
 import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -65,6 +65,7 @@ class DocumentInfo:
     target_file: str = ""
     notes: str = ""
     source_pages: str = ""
+    region: str = ""
 
 
 @dataclass
@@ -439,6 +440,7 @@ def write_reports(output_dir: Path, records: list[DocumentInfo]) -> None:
                 "target_file",
                 "notes",
                 "source_pages",
+                "region",
             ],
         )
         writer.writeheader()
@@ -469,6 +471,100 @@ def annotate_wms_links(records: list[DocumentInfo]) -> None:
         record.notes = "; ".join(filter(None, [record.notes, *details]))
 
 
+def normalize_so_key(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", value.upper())
+
+
+def append_note(record: DocumentInfo, note: str) -> None:
+    record.notes = "; ".join(filter(None, [record.notes, note]))
+
+
+def assign_regions(records: list[DocumentInfo]) -> None:
+    """Classify a task as Local or Oversea from DR/WMS/SO links."""
+    delivery_notes = {
+        normalized_number(record.delivery_note_no): record
+        for record in records
+        if record.document_type == "Delivery Note" and record.delivery_note_no
+    }
+
+    local_delivery_notes: set[str] = set()
+    for receipt in records:
+        if receipt.document_type != "Distribution Receipt":
+            continue
+        receipt.region = "Local"
+        append_note(receipt, "Region: Local (Distribution Receipt)")
+        for wms_ref in receipt.wms_refs:
+            note = delivery_notes.get(normalized_number(wms_ref))
+            if note:
+                note.region = "Local"
+                local_delivery_notes.add(note.delivery_note_no)
+
+    local_so_keys = {
+        normalize_so_key(note.customer_so)
+        for note in delivery_notes.values()
+        if note.region == "Local" and note.customer_so
+    }
+
+    for record in records:
+        if record.status == "ERROR" or record.region:
+            continue
+        if record.document_type == "Delivery Note":
+            if record.delivery_note_no in local_delivery_notes:
+                record.region = "Local"
+                append_note(record, "Region: Local (WMS linked to Distribution Receipt)")
+            else:
+                record.region = "Oversea"
+                append_note(record, "Region: Oversea (no DR/WMS link)")
+        elif record.document_type == "Packing List":
+            if normalize_so_key(record.customer_so) in local_so_keys:
+                record.region = "Local"
+                append_note(record, "Region: Local (SO linked to local Delivery Note)")
+            else:
+                record.region = "Oversea"
+                append_note(record, "Region: Oversea (no local DR/DN link)")
+        else:
+            record.region = "Oversea"
+
+
+def resolve_ct_rename_root(path: Path) -> Path:
+    path = path.expanduser().resolve()
+    if path.name.casefold() == "ct rename":
+        return path
+    return path / "CT Rename"
+
+
+def create_task_directory(root: Path, task_name: str | None = None) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    hong_kong_time = datetime.now(timezone(timedelta(hours=8)))
+    base_name = safe_filename(
+        task_name or hong_kong_time.strftime("%Y-%m-%d_%H-%M-%S")
+    )
+    task_dir = root / base_name
+    suffix = 2
+    while task_dir.exists():
+        task_dir = root / f"{base_name}_{suffix:02d}"
+        suffix += 1
+    (task_dir / "Local").mkdir(parents=True)
+    (task_dir / "Oversea").mkdir()
+    return task_dir
+
+
+def move_to_region_folders(task_dir: Path, records: list[DocumentInfo]) -> None:
+    for record in records:
+        if record.status == "ERROR" or not record.target_file or not record.region:
+            continue
+        current = Path(record.target_file)
+        destination = task_dir / record.region / current.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if current.resolve() != destination.resolve():
+            if destination.exists():
+                raise FileExistsError(
+                    f"Target exists in {record.region} folder: {destination.name}"
+                )
+            shutil.move(str(current), str(destination))
+        record.target_file = str(destination)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Recognize and rename KLN CHATIBE PDF documents."
@@ -481,8 +577,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-o",
         "--output",
-        required=True,
-        help="Directory for renamed files and reports.",
+        default=str(Path.home() / "Documents" / "CT Rename"),
+        help=(
+            "CT Rename root directory. A timestamped task folder is created "
+            "inside it automatically (default: ~/Documents/CT Rename)."
+        ),
+    )
+    parser.add_argument(
+        "--task-name",
+        help="Optional task folder name; mainly useful for controlled testing.",
     )
     parser.add_argument(
         "--move",
@@ -666,7 +769,7 @@ def process_pdf_batch(
 
 def main() -> int:
     args = build_parser().parse_args()
-    output_dir = Path(args.output).expanduser().resolve()
+    rename_root = resolve_ct_rename_root(Path(args.output))
 
     try:
         inputs = collect_inputs(args.inputs, args.recursive)
@@ -678,8 +781,7 @@ def main() -> int:
         print("ERROR: no PDF files found", file=sys.stderr)
         return 2
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if output_dir in {path.parent for path in inputs} and args.move:
+    if rename_root in {path.parent for path in inputs} and args.move:
         print(
             "ERROR: --move requires an output directory different from every input directory",
             file=sys.stderr,
@@ -689,11 +791,12 @@ def main() -> int:
     ocr = RapidOCR()
     records: list[DocumentInfo] = []
     planned_targets: dict[Path, Path] = {}
+    task_dir = create_task_directory(rename_root, args.task_name)
 
     for source in inputs:
         source_records = process_pdf_batch(
             source=source,
-            output_dir=output_dir,
+            output_dir=task_dir,
             ocr=ocr,
             dpi=args.dpi,
             move=args.move,
@@ -713,14 +816,17 @@ def main() -> int:
             )
 
     annotate_wms_links(records)
-    write_reports(output_dir, records)
+    assign_regions(records)
+    move_to_region_folders(task_dir, records)
+    write_reports(task_dir, records)
 
     failed = sum(record.status == "ERROR" for record in records)
     print(
         f"\nProcessed {len(records)} file(s): "
         f"{len(records) - failed} succeeded, {failed} failed."
     )
-    print(f"Reports: {output_dir / 'rename_report.csv'}")
+    print(f"Task folder: {task_dir}")
+    print(f"Reports: {task_dir / 'rename_report.csv'}")
     return 1 if failed else 0
 
 
