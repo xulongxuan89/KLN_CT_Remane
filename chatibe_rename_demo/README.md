@@ -64,10 +64,23 @@ CT Rename\
     └── rename_report.json
 ```
 
-区域判定使用同一任务内的业务关联：Distribution Receipt 本身为 `Local`；
-与 DR 的 WMS Ref# 匹配的 Delivery Note 为 `Local`；与 Local Delivery Note
-具有相同 SO 的 Packing List 为 `Local`；没有本地 DR/DN 关联的单据放入
-`Oversea`。
+区域规则：Distribution Receipt 和 Delivery Note 放入 `Local`；Packing List
+放入 `Oversea`。Oversea 通常没有 Delivery Note。
+
+完成本地任务目录后，程序会按以下规则复制到内网：
+
+| 单据 | 内网目标 |
+|---|---|
+| Distribution Receipt | `\\klhkhqsrv251\Tradelink\FL\KTMS JOB SHEET\CHATIBE\2026` |
+| Delivery Note | `\\Klhkhqnas002\il\Looks\CS_Charlotte_Tilbury\POD\LOCAL POD\2026` |
+| Packing List | `\\Klhkhqnas002\il\Looks\CS_Charlotte_Tilbury\POD\Retail POD\2026` |
+
+内网复制失败不会删除 `CT Rename` 中的任务文件。程序不会覆盖内网中已有的
+不同内容文件，失败原因记录在任务报告中。
+
+在未连接公司内网的电脑上测试时，可以添加 `--no-network`。GUI 中取消勾选
+“完成后复制到内网”也会保留完整本地任务，并将每条记录标记为
+`NETWORK_DISABLED`。
 
 正式分发给同事前，建议由 IT 对生成目录中的 EXE 做公司代码签名，否则
 Windows SmartScreen 可能显示“未知发布者”。

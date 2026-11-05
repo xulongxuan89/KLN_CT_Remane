@@ -17,6 +17,7 @@ from rename_documents import (
     annotate_wms_links,
     assign_regions,
     collect_inputs,
+    copy_to_network_destinations,
     create_task_directory,
     move_to_region_folders,
     process_pdf_batch,
@@ -34,6 +35,7 @@ class RenameApp:
 
         self.inputs: list[Path] = []
         self.output_var = StringVar()
+        self.network_var = BooleanVar(value=True)
         self.count_var = StringVar(value="尚未选择文件")
         self.ui_queue: queue.Queue[tuple] = queue.Queue()
         self.worker: threading.Thread | None = None
@@ -102,11 +104,16 @@ class RenameApp:
             text="打开输出文件夹",
             command=self._open_output,
         ).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(
+            action_frame,
+            text="完成后复制到内网",
+            variable=self.network_var,
+        ).pack(side="left", padx=(16, 0))
         ttk.Label(
             action_frame,
-            text="默认复制原文件；已有同名但内容不同的文件不会被覆盖。",
+            text="本地任务文件会保留；内网失败可重试。",
             foreground="#555555",
-        ).pack(side="left", padx=(16, 0))
+        ).pack(side="left", padx=(8, 0))
 
         result_frame = ttk.LabelFrame(container, text="处理结果", padding=8)
         result_frame.grid(row=4, column=0, sticky="nsew")
@@ -195,12 +202,17 @@ class RenameApp:
 
         self.worker = threading.Thread(
             target=self._run_batch,
-            args=(list(self.inputs), output_dir),
+            args=(list(self.inputs), output_dir, self.network_var.get()),
             daemon=True,
         )
         self.worker.start()
 
-    def _run_batch(self, inputs: list[Path], output_dir: Path) -> None:
+    def _run_batch(
+        self,
+        inputs: list[Path],
+        output_dir: Path,
+        network_enabled: bool,
+    ) -> None:
         try:
             rename_root = resolve_ct_rename_root(output_dir)
             task_dir = create_task_directory(rename_root)
@@ -228,12 +240,17 @@ class RenameApp:
             annotate_wms_links(records)
             assign_regions(records)
             move_to_region_folders(task_dir, records)
+            network_copied, network_failed = copy_to_network_destinations(
+                records,
+                enabled=network_enabled,
+            )
             write_reports(task_dir, records)
             failures = sum(record.status == "ERROR" for record in records)
             self.ui_queue.put(
                 (
                     "done",
                     f"完成：{len(records) - failures} 个成功，{failures} 个失败。"
+                    f"内网复制：{network_copied} 成功，{network_failed} 失败。"
                     f"任务文件夹：{task_dir}",
                 )
             )

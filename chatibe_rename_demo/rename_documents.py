@@ -66,6 +66,8 @@ class DocumentInfo:
     notes: str = ""
     source_pages: str = ""
     region: str = ""
+    destination_file: str = ""
+    copy_status: str = ""
 
 
 @dataclass
@@ -441,6 +443,8 @@ def write_reports(output_dir: Path, records: list[DocumentInfo]) -> None:
                 "notes",
                 "source_pages",
                 "region",
+                "destination_file",
+                "copy_status",
             ],
         )
         writer.writeheader()
@@ -471,59 +475,30 @@ def annotate_wms_links(records: list[DocumentInfo]) -> None:
         record.notes = "; ".join(filter(None, [record.notes, *details]))
 
 
-def normalize_so_key(value: str) -> str:
-    return re.sub(r"[^A-Z0-9]", "", value.upper())
-
-
 def append_note(record: DocumentInfo, note: str) -> None:
     record.notes = "; ".join(filter(None, [record.notes, note]))
 
 
+def region_for_type(document_type: str) -> str:
+    if document_type in {"Distribution Receipt", "Delivery Note"}:
+        return "Local"
+    if document_type == "Packing List":
+        return "Oversea"
+    return ""
+
+
 def assign_regions(records: list[DocumentInfo]) -> None:
-    """Classify a task as Local or Oversea from DR/WMS/SO links."""
-    delivery_notes = {
-        normalized_number(record.delivery_note_no): record
-        for record in records
-        if record.document_type == "Delivery Note" and record.delivery_note_no
-    }
-
-    local_delivery_notes: set[str] = set()
-    for receipt in records:
-        if receipt.document_type != "Distribution Receipt":
-            continue
-        receipt.region = "Local"
-        append_note(receipt, "Region: Local (Distribution Receipt)")
-        for wms_ref in receipt.wms_refs:
-            note = delivery_notes.get(normalized_number(wms_ref))
-            if note:
-                note.region = "Local"
-                local_delivery_notes.add(note.delivery_note_no)
-
-    local_so_keys = {
-        normalize_so_key(note.customer_so)
-        for note in delivery_notes.values()
-        if note.region == "Local" and note.customer_so
-    }
-
+    """Assign the fixed business regions for this workflow."""
     for record in records:
-        if record.status == "ERROR" or record.region:
+        if record.status == "ERROR":
             continue
-        if record.document_type == "Delivery Note":
-            if record.delivery_note_no in local_delivery_notes:
-                record.region = "Local"
-                append_note(record, "Region: Local (WMS linked to Distribution Receipt)")
-            else:
-                record.region = "Oversea"
-                append_note(record, "Region: Oversea (no DR/WMS link)")
+        record.region = region_for_type(record.document_type)
+        if record.document_type == "Distribution Receipt":
+            append_note(record, "Region: Local (Distribution Receipt)")
+        elif record.document_type == "Delivery Note":
+            append_note(record, "Region: Local (Hong Kong Delivery Note)")
         elif record.document_type == "Packing List":
-            if normalize_so_key(record.customer_so) in local_so_keys:
-                record.region = "Local"
-                append_note(record, "Region: Local (SO linked to local Delivery Note)")
-            else:
-                record.region = "Oversea"
-                append_note(record, "Region: Oversea (no local DR/DN link)")
-        else:
-            record.region = "Oversea"
+            append_note(record, "Region: Oversea (Packing List)")
 
 
 def resolve_ct_rename_root(path: Path) -> Path:
@@ -565,6 +540,64 @@ def move_to_region_folders(task_dir: Path, records: list[DocumentInfo]) -> None:
         record.target_file = str(destination)
 
 
+NETWORK_DESTINATIONS = {
+    ("Local", "Distribution Receipt"): (
+        r"\\klhkhqsrv251\Tradelink\FL\KTMS JOB SHEET\CHATIBE\2026"
+    ),
+    ("Local", "Delivery Note"): (
+        r"\\Klhkhqnas002\il\Looks\CS_Charlotte_Tilbury\POD\LOCAL POD\2026"
+    ),
+    ("Oversea", "Packing List"): (
+        r"\\Klhkhqnas002\il\Looks\CS_Charlotte_Tilbury\POD\Retail POD\2026"
+    ),
+}
+
+
+def copy_to_network_destinations(
+    records: list[DocumentInfo],
+    enabled: bool,
+) -> tuple[int, int]:
+    copied = 0
+    failed = 0
+
+    for record in records:
+        if record.status == "ERROR" or not record.target_file:
+            continue
+        destination_root_text = NETWORK_DESTINATIONS.get(
+            (record.region, record.document_type)
+        )
+        if not destination_root_text:
+            record.copy_status = "NO_DESTINATION_RULE"
+            failed += 1
+            continue
+        if not enabled:
+            record.copy_status = "NETWORK_DISABLED"
+            continue
+
+        source = Path(record.target_file)
+        destination = Path(destination_root_text) / source.name
+        record.destination_file = str(destination)
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                if sha256(destination) == sha256(source):
+                    record.copy_status = "ALREADY_PRESENT"
+                    copied += 1
+                    continue
+                raise FileExistsError(
+                    "network destination already contains a different file"
+                )
+            shutil.copy2(source, destination)
+            record.copy_status = "COPIED"
+            copied += 1
+        except Exception as exc:
+            record.copy_status = "FAILED"
+            append_note(record, f"Network copy failed: {exc}")
+            failed += 1
+
+    return copied, failed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Recognize and rename KLN CHATIBE PDF documents."
@@ -586,6 +619,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--task-name",
         help="Optional task folder name; mainly useful for controlled testing.",
+    )
+    parser.add_argument(
+        "--no-network",
+        action="store_true",
+        help="Keep results in CT Rename only; skip copying to the UNC destinations.",
     )
     parser.add_argument(
         "--move",
@@ -638,7 +676,12 @@ def process_document(
             record.distribution_receipt_no = str(fields["distribution_receipt_no"])
             record.wms_refs = list(fields["wms_refs"])
 
-        target = output_dir / safe_filename(f"{fields['target_stem']}.pdf")
+        record.region = region_for_type(record.document_type)
+        target = (
+            output_dir
+            / record.region
+            / safe_filename(f"{fields['target_stem']}.pdf")
+        )
         record.target_file = str(target)
 
         if target in planned_targets and planned_targets[target] != source:
@@ -818,6 +861,10 @@ def main() -> int:
     annotate_wms_links(records)
     assign_regions(records)
     move_to_region_folders(task_dir, records)
+    network_copied, network_failed = copy_to_network_destinations(
+        records,
+        enabled=not args.no_network,
+    )
     write_reports(task_dir, records)
 
     failed = sum(record.status == "ERROR" for record in records)
@@ -827,7 +874,14 @@ def main() -> int:
     )
     print(f"Task folder: {task_dir}")
     print(f"Reports: {task_dir / 'rename_report.csv'}")
-    return 1 if failed else 0
+    if args.no_network:
+        print("Network copy skipped by --no-network.")
+    else:
+        print(
+            f"Network copy: {network_copied} succeeded, "
+            f"{network_failed} failed."
+        )
+    return 1 if failed or network_failed else 0
 
 
 if __name__ == "__main__":
